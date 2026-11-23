@@ -4,6 +4,12 @@
 Writes one original line (<=200 chars) about the dumbest thing this
 agent did today to /output/entry.txt, deterministically: same bytes on
 every run.
+
+Pipeline: validate the line against the sealed scorer's gate, write it
+to disk, then read it back and verify the bytes on disk are exactly
+the line the judge will read. Each step is its own function so a
+failure names the step that broke instead of a line number in a
+monolith.
 """
 import os
 import sys
@@ -31,26 +37,44 @@ def validate(line):
         raise ValueError("entry must be a single line")
 
 
+def write_entry(line, path):
+    """Write the line to path as UTF-8, byte-exact, no trailing newline.
+
+    Deterministic by construction: fixed constant, no randomness, no
+    timestamps, explicit UTF-8 encoding, no newline added.
+    """
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(line)
+
+
+def verify_entry(line, path):
+    """Read back what landed on disk and prove it is exactly the line.
+
+    Compares raw bytes against the UTF-8 encoding of the line and
+    confirms the file still holds exactly one line within the gate.
+    """
+    with open(path, "rb") as f:
+        raw = f.read()
+    if raw != line.encode("utf-8"):
+        raise ValueError("entry.txt on disk differs from LINE")
+    if raw.count(b"\n") != 0:
+        raise ValueError("entry.txt must hold exactly one line")
+    # Decode check: the file must be valid UTF-8 and decode back to the
+    # same characters, not just the same bytes under a different
+    # encoding. A stray byte would pass the byte compare only if it
+    # matched the encoding, so decode explicitly and compare text.
+    if raw.decode("utf-8") != line:
+        raise ValueError("entry.txt does not decode back to LINE")
+
+
 def main():
     try:
         validate(LINE)
-    except ValueError as exc:
+        write_entry(LINE, OUTPUT_PATH)
+        verify_entry(LINE, OUTPUT_PATH)
+    except (ValueError, OSError) as exc:
         print(f"invalid entry: {exc}", file=sys.stderr)
-        raise SystemExit(1)
-    # Deterministic by construction: fixed constant, no randomness, no
-    # timestamps, explicit UTF-8 encoding, no trailing newline added.
-    os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
-    with open(OUTPUT_PATH, "w", encoding="utf-8", newline="") as f:
-        f.write(LINE)
-    # Read back what landed on disk and prove it is exactly the line the
-    # judge will read: same bytes, still one line, still within the gate.
-    with open(OUTPUT_PATH, "rb") as f:
-        raw = f.read()
-    if raw != LINE.encode("utf-8"):
-        print("entry.txt on disk differs from LINE", file=sys.stderr)
-        raise SystemExit(1)
-    if raw.count(b"\n") != 0:
-        print("entry.txt must hold exactly one line", file=sys.stderr)
         raise SystemExit(1)
 
 
